@@ -1,0 +1,363 @@
+#!/usr/bin/perl -w
+# Copyright (C) 2019 Erik Tomusk. See COPYRIGHT section in POD below.
+
+use strict;
+use v5.10;
+use File::Spec;
+use Getopt::Long;
+use List::Util qw(max);
+
+=head1 NAME
+
+git-confess - Interrogate a file for useful information
+
+=head1 SYNOPSIS
+
+I<git confess> [options] [--] <path>
+
+=head1 DESCRIPTION
+
+Displays a bunch of useful information about a file's status and history with
+just one command. Useful if, for example, I<git-status> returns no output, and
+you can't remember what that means.
+
+Unlike most git commands, I<git-confess> can be called even when I<$PWD> is
+outside a git repository.
+
+=head1 OPTIONS
+
+=over
+
+=item -v, --verbose
+
+Increase verbosity of output (default: 1). Can be set several times.
+
+=item -q, --quiet
+
+Decrease verbosity of output. Opposite of I<--verbose>. Can be set several times.
+
+=back
+
+=head1 EXIT STATUS
+
+0 on success, non-zero otherwise.
+
+=head1 KNOWN ISSUES
+
+=over
+
+=item *
+
+Renamed files are reported as added.
+
+=item *
+
+Handling of files that are both ignored and tracked is undefined.
+
+=back
+
+=head1 AUTHOR
+
+Written by Erik Tomusk (L<https://github.com/etomzak/gitpuncher>).
+
+=head1 COPYRIGHT
+
+Copyright (C) 2019 Erik Tomusk. This is free software, distributed under the
+GNU GPL version 3. This software comes with ABSOLUTELY NO WARRANTY. For
+details, see the LICENSE file that came with this code or
+L<https://www.gnu.org/licenses/gpl-3.0.txt>.
+
+=cut
+
+# Options
+my $V = 0;
+my $quiet = 0;
+my $H = 0;
+my $HH = 'n';
+my $HELP = 0;
+Getopt::Long::Configure ("bundling");
+GetOptions('verbose|v+' => \$V,
+           'quiet|q+'   => \$quiet,
+           'h'          => \$H,
+           'help'       => \$HELP);
+
+if($HELP) {
+  system("perldoc $0");
+  exit(0);
+}
+
+if ($H) {
+  say 'usage: git confess [-vv -q] <path>';
+  exit(0);
+}
+
+$V = max(0, $V+1 - $quiet);
+
+$| = 1;
+print 'Interrogating...';
+print "\b" x 16;
+
+# Input checking
+die "ERROR: Not enough arguments\n" if (@ARGV < 1);
+my $IN_STR = $ARGV[0];
+my ($VOL, $DIR, $FILE) = File::Spec->splitpath($IN_STR);
+die "ERROR: Can't handle volume $VOL\n" if ($VOL);
+die "ERROR: $IN_STR doesn't exist\n" if (not -e $IN_STR);
+die "ERROR: $IN_STR is not a file\n" if (not -f $IN_STR);
+$DIR = '.' if ($DIR eq '');
+
+my $RED = "\033[31m";
+my $GREEN = "\033[32m";
+my $YELLOW = "\033[33m";
+my $TEAL = "\033[36m";
+my $TEALB = "\033[36;1m";
+my $WHITEB = "\033[37;1m";
+my $END = "\033[0m";
+
+my $cmd_out;         # Temp output from ``
+my $dir_t;           # Directory type
+my $is_ignored  = 0; # If file is ignored by git
+my $is_tracked  = 0; # If git is tracking the file
+my $is_modified = 0; # If file has changes
+my $is_staged   = 0; # If file has staged changes
+
+my $cdate_str = "";        # Creation date string
+my $mdate_str = "";        # Last commit date string
+my $staged_summary = "";   # Summary of staged changes
+my $modified_summary = ""; # Summary of unstaged changes
+my $contrib_str = "";      # Top contributor
+
+# Check if in a repo
+{
+  $_ = 'cmd_out';
+  $cmd_out = `cd $DIR; git rev-parse --is-inside-work-tree 2>/dev/null`;
+  chomp($cmd_out);
+  tr/odmc_t/ togo\t/;
+  
+  if ($cmd_out eq "true") {
+    $dir_t = "git";
+  } elsif ($cmd_out eq "false") {
+    $dir_t = ".git";
+  } elsif ($cmd_out eq "") {
+    $dir_t = "none";
+  } else {
+    die "ERROR: Unexpected output from rev-parse\n";
+  } eval unless $V <= 3;
+}
+
+goto PRINT if ($dir_t eq '.git' or $dir_t eq 'none');
+
+# Check if file is ignored
+{
+  $cmd_out = `cd $DIR; git check-ignore $FILE`;
+  $is_ignored = 1 if ($cmd_out);
+}
+
+goto PRINT if ($is_ignored);
+
+# Get file status
+{
+  $cmd_out = `cd $DIR; git log --follow -1 $FILE`;
+  if ($cmd_out ne '') {
+    $is_tracked = 1;
+  }
+
+  $cmd_out = `cd $DIR; git status --porcelain $FILE`;
+  if ($cmd_out ne '') {
+    $is_staged = 1 if (substr($cmd_out, 0, 1) eq 'M');
+    $is_staged = 1 if (substr($cmd_out, 0, 1) eq 'A');
+    $is_modified = 1 if (substr($cmd_out, 1, 1) eq 'M');
+
+    # If a file is deleted, re-created, and not tracked, can hit this condition
+    die "ERROR: File status is deleted" if (substr($cmd_out, 0, 1) eq 'D');
+  }
+}
+
+# Untracked file
+goto PRINT unless ($is_tracked or $is_staged);
+goto PRINT if ($V == 0);
+
+# Get creation time
+if ($V > 1 and $is_tracked) {
+  # Based on https://stackoverflow.com/a/25633731
+  my $cmd = "cd $DIR; " .
+    'git log --diff-filter=A --follow --format="%ad (%ar)" --date=short ' .
+    $FILE;
+  $cmd_out = `$cmd`;
+  # If file has been created more than once, the above command could return
+  # several results.
+  chomp $cmd_out;
+  if (scalar(split("\n", $cmd_out)) != 1 ) {
+    $cdate_str = $RED . '[ AMBIGUOUS ]' . $END;
+  } else {
+    # Insert $END into date string
+    $cmd_out =~ s/\s/$END /;
+    $cdate_str = $TEAL . $cmd_out . $END;
+  }
+}
+
+# Get last commit time
+if ($V > 1) {
+  my $cmd = "cd $DIR; " .
+    'git log --diff-filter=M --follow --format="%ad (%ar)" --date=short -1 '
+    . $FILE;
+  $cmd_out = `$cmd`;
+  chomp $cmd_out;
+  if ($cmd_out eq '') {
+    $mdate_str = $YELLOW . '[ NEVER ]' . $END;
+  } else {
+    # Insert $END into date string
+    $cmd_out =~ s/\s/$END /;
+    $mdate_str = $TEAL . $cmd_out;
+  }
+}
+
+# Summarize staged changes
+$_ = qq(\147o\164\157\t\$).q(H) x2;
+if ($is_staged) {
+  # git-show with ':' needs the full path inside the repo b/c it's an index
+  # look-up
+  my $full_path = `cd $DIR; git ls-files --full-name $FILE`;
+  chomp $full_path;
+  my $lines = `cd $DIR; git show :$full_path | wc -l`;
+  chomp $lines;
+  $lines = int($lines);
+
+  if ($is_tracked) {
+    $cmd_out = `cd $DIR; git diff --cached --numstat $FILE`;
+    $cmd_out =~ m/(\d+)\s+(\d+)/; # inserted, deleted
+    my $ins = int($1);
+    my $del = int($2);
+
+    # If file had >0 lines in last commit
+    if ($lines-$ins+$del) {
+      my $delta = $ins-$del;
+      my $C = ($delta >= 0.0) ? $GREEN : $RED;
+      $staged_summary .= 'Size change: ' . $C .
+        sprintf('%.0f%%', ($delta)*100/($lines-$ins+$del)) . $END . ' ';
+    }
+    # If file has >0 lines now
+    if ($lines) {
+      $staged_summary .= 'Modified lines: ' . $YELLOW .
+        sprintf('%.0f%%', $ins*100/$lines) . $END . ' ';
+    }
+    $staged_summary .= "($lines line";
+    $staged_summary .= 's' if ($lines != 1);
+    $staged_summary .= ' total';
+    # If file had 0 lines at last commit
+    if ($lines-$ins+$del == 0) {
+      $staged_summary .= ', all new)';
+    } else {
+      $staged_summary .= ')';
+    }
+  } else {
+    $staged_summary = "${YELLOW}$lines${END} line";
+    $staged_summary .= 's' if ($lines != 1);
+  }
+} eval;
+
+# Some extra checks
+u: if (not $is_staged and not $is_modified) {
+$_ = 'cevag _LRYYBJ.`fyrrc 5;bq -k -A48 _NETI[0]`;fnl "_+ERQ=Gur fhfcrpg vf ' .
+     'ab hfr gb hf qrnq{{_RAQ";rkvg(0);';
+tr/{+=N-ZA-Mn-za-m_/!{}A-Za-z$/; eval;
+} n:
+
+# Summarize unstaged changes
+if ($is_modified) {
+  my $lines = `cd $DIR; cat $FILE | wc -l`;
+  chomp $lines;
+  $lines = int($lines);
+
+  $cmd_out = `cd $DIR; git diff --numstat $FILE`;
+  $cmd_out =~ m/(\d+)\s+(\d+)/; # inserted, deleted
+  my $ins = int($1);
+  my $del = int($2);
+
+  # If file had >0 lines before changes
+  if ($lines-$ins+$del) {
+    my $delta = $ins-$del;
+    my $C = ($delta >= 0.0) ? $GREEN : $RED;
+    $modified_summary .= 'Size change: ' . $C .
+      sprintf('%.0f%%', ($delta)*100/($lines-$ins+$del)) . $END . ' ';
+  }
+  # If file has >0 lines now
+  if ($lines) {
+    $modified_summary .= 'Modified lines: ' . $YELLOW .
+      sprintf('%.0f%%', $ins*100/$lines) . $END . ' ';
+  }
+  $modified_summary .= "($lines line";
+  $modified_summary .= 's' if ($lines != 1);
+  $modified_summary .= ' total';
+  # If file had 0 lines at last commit
+  if ($lines-$ins+$del == 0) {
+    $modified_summary .= ', all new)';
+  } else {
+    $modified_summary .= ')';
+  }
+}
+
+# Find top contributor
+if ($V > 1 and $is_tracked) {
+  my $cmd = "cd $DIR; " .
+    'git log --diff-filter=AM --follow --format=%an ' . $FILE .
+    '| sort | uniq -c | sort -r | head -n1';
+  $cmd_out = `$cmd`;
+  $cmd_out =~ m/\d+\s+(\S+)/;
+  $contrib_str = $1;
+}
+
+PRINT:
+
+print ' ' x 16 . "\b" x 16;
+
+if ($dir_t eq '.git') {
+  say "${YELLOW}Internal git file${END}";
+  exit(0);
+}
+
+if ($dir_t eq 'none') {
+  say "${YELLOW}File not in a git repo${END}";
+  exit(0);
+}
+
+if ($is_ignored) {
+  say "${YELLOW}Ignored file${END} (see .gitignore)";
+  exit(0);
+}
+
+if (not $is_tracked and $is_staged) {
+  say "${YELLOW}New file" . &cToS . $END;
+  if ($V > 0) {
+    say "  ${WHITEB}Staged changes:$END   " . ($staged_summary);
+    if ($is_modified) {
+      say "  ${WHITEB}Unstaged changes:${END} " . $modified_summary;
+    }
+  }
+  exit(0);
+}
+
+if (not $is_tracked) {
+  say "${YELLOW}Untracked file${END}";
+  exit(0);
+}
+
+say "${YELLOW}Tracked file" . &cToS . $END;
+
+exit(0) if ($V == 0);
+if ($V > 1) {
+  say "  ${WHITEB}Created:${END}          " . $cdate_str;
+  say "  ${WHITEB}Last modified:${END}    " . $mdate_str;
+  say "  ${WHITEB}Top contributor:${END}  " . "$TEALB$contrib_str$END";
+}
+say "  ${WHITEB}Staged changes:${END}   " . $staged_summary if ($is_staged);
+say "  ${WHITEB}Unstaged changes:${END} " . $modified_summary if ($is_modified);
+
+exit(0);
+
+sub cToS {
+  return ' with staged changes' if ($is_staged and not $is_modified);
+  return ' with unstaged changes' if (not $is_staged and $is_modified);
+  return ' with staged and unstaged changes' if ($is_staged and $is_modified);
+  return ' (no changes)';
+}
