@@ -303,7 +303,7 @@ if ($V > 1 and $is_tracked) {
     'git log --diff-filter=AM --follow --format=%an ' . $FILE .
     '| sort | uniq -c | sort -r | head -n1';
   $cmd_out = `$cmd`;
-  $cmd_out =~ m/\d+\s+(\S+)/;
+  $cmd_out =~ m/\d+\s+(.+)/;
   $contrib_str = $1;
 }
 
