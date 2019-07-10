@@ -24,6 +24,12 @@ you can't remember what that means.
 Unlike most git commands, I<git-confess> can be called even when I<$PWD> is
 outside a git repository.
 
+I<git-confess> might sometimes warn that I<--follow> failed when reporting a
+file's creation time. This happens when I<git> cannot establish a file's history
+beyond a rename. I<git-confess> then lists the latest creation time, which may
+actually be the latest rename time. Future improvements to I<git-log> may reduce
+the frequency of these warnings.
+
 =head1 OPTIONS
 
 =over
@@ -185,22 +191,27 @@ if ($V > 1 and $is_tracked) {
     $FILE;
   $cmd_out = `$cmd`;
   # If file has been created more than once, the above command could return
-  # several results.
+  # several results. Try again without '--follow'.
   chomp $cmd_out;
   if (scalar(split("\n", $cmd_out)) != 1 ) {
-    $cdate_str = $RED . '[ AMBIGUOUS ]' . $END;
-  } else {
-    # Insert $END into date string
-    $cmd_out =~ s/\s/$END /;
-    $cdate_str = $TEAL . $cmd_out . $END;
+    my $cmd = "cd $DIR; " .
+      'git log --diff-filter=A --format="%ad (%ar)" --date=short ' . $FILE;
+    $cmd_out = `$cmd`;
+    chomp $cmd_out;
+    die ">1 line of output\n" if (scalar(split("\n", $cmd_out)) != 1);
+    $cdate_str = "(${RED}warning: --follow failed${END})";
   }
+
+  # Insert $END into date string
+  $cmd_out =~ s/\s/$END /;
+  $cdate_str = $TEAL . $cmd_out . $END . $cdate_str;
 }
 
 # Get last commit time
 if ($V > 1) {
+  # Don't use --follow because a rename is a type of modify
   my $cmd = "cd $DIR; " .
-    'git log --diff-filter=M --follow --format="%ad (%ar)" --date=short -1 '
-    . $FILE;
+    'git log --diff-filter=MR --format="%ad (%ar)" --date=short -1 ' . $FILE;
   $cmd_out = `$cmd`;
   chomp $cmd_out;
   if ($cmd_out eq '') {
