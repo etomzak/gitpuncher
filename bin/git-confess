@@ -312,7 +312,7 @@ if ($is_modified) {
 if ($V > 1 and $is_tracked) {
   my $cmd = "cd $DIR; " .
     'git log --diff-filter=AM --follow --format=%an ' . $FILE .
-    '| sort | uniq -c | sort -r | head -n1';
+    '| sort | uniq -c | sort -rn | head -n1';
   $cmd_out = `$cmd`;
   $cmd_out =~ m/\d+\s+(.+)/;
   $contrib_str = $1;
